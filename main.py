@@ -279,27 +279,9 @@ def run(args: argparse.Namespace) -> int:
     recon_path = write_report(recon, output_dir)
     output_paths["reconciliation_report.txt"] = recon_path
 
-    # 7. Summary
-    sec_a = recon.section_a
-    sec_d = recon.section_d
-
+    # 7. Summary — print the full reconciliation report to the terminal
     print()
-    print("=" * 60)
-    print("  ibkr-k4-tax  —  Summary")
-    print("=" * 60)
-    print(f"  Trades processed:       {recon.trade_count:,}")
-    print(f"  Section A profit:       {sec_a.profit:>12,.0f} SEK")
-    print(f"  Section A loss:         {sec_a.loss:>12,.0f} SEK")
-    print(f"  Section D profit:       {sec_d.profit:>12,.0f} SEK")
-    print(f"  Section D loss:         {sec_d.loss:>12,.0f} SEK")
-    print(f"  Section D net profit:   {sec_d.net:>12,.0f} SEK")
-    print()
-    if recon.diffs:
-        src = f" (from {Path(args.tax_pdf).name})" if args.tax_pdf else ""
-        print(f"  Skatteverket validation{src}: {recon.status_label}")
-    else:
-        print("  Reconciliation: no Skatteverket data provided")
-    print()
+    print(format_report(recon))
     print("=" * 60)
     print("  Output files")
     print("=" * 60)
