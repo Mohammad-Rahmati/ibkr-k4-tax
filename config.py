@@ -124,6 +124,7 @@ OUTPUT_TRADES_SEK = "trades_sek.csv"
 OUTPUT_K4_SUMMARY_CSV = "k4_summary.csv"
 OUTPUT_K4_SUMMARY_JSON = "k4_summary.json"
 OUTPUT_RECONCILIATION_REPORT = "reconciliation_report.txt"
+OUTPUT_SKV_PARSE_LOG = "skv_parse_log.txt"
 
 # ---------------------------------------------------------------------------
 # Asset-class groupings used by the reconciliation module
@@ -159,6 +160,25 @@ OPTIONS_ASSET_CLASSES: frozenset[str] = frozenset(
 # Default tolerance (fraction) for reconciliation checks.
 # A deviation > this fraction triggers a WARNING status.
 RECONCILIATION_TOLERANCE = 0.05  # 5 %
+
+# ---------------------------------------------------------------------------
+# Skatteverket PDF parser
+#
+# Swedish key phrases that identify IBKR control totals in the declaration.
+# Keys are lower-cased (matching is case-insensitive in skv_parser.py).
+# Both dash variants (hyphen "-" and en-dash "–") are listed because PDFs
+# sometimes substitute one for the other.
+# ---------------------------------------------------------------------------
+SKV_PHRASE_MAP: dict[str, str] = {
+    # Futures proceeds
+    "övriga terminer - erhållen ersättning":  "futures_proceeds",
+    "övriga terminer – erhållen ersättning":  "futures_proceeds",
+    # Futures cost
+    "övriga terminer - erlagd ersättning":    "futures_cost",
+    "övriga terminer – erlagd ersättning":    "futures_cost",
+    # Options proceeds (proceeds only — Skatteverket does not pre-fill cost)
+    "övriga optioner":                        "options_proceeds",
+}
 
 # ---------------------------------------------------------------------------
 # Logging

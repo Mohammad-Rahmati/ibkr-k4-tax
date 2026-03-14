@@ -20,6 +20,7 @@ from parser import load_trades
 from fx import FXRateProvider
 from k4_generator import generate_k4_report, convert_trades_to_sek, build_symbol_summaries, build_section_summaries
 from reconciliation import compute_reconciliation, write_report, format_report
+from skv_parser import parse_skv_pdf, SkvControlData, SkvParseError
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,11 @@ Examples:
   # Specify a custom output directory
   python main.py --input activity.csv --start 2025-01-01 --end 2025-12-31 --output ./reports/2025
 
-  # With Skatteverket reconciliation figures
+  # With Skatteverket PDF (auto-extracts control totals)
+  python main.py --input activity.csv --start 2025-01-01 --end 2025-12-31 \\
+    --tax-pdf deklaration.pdf
+
+  # With manually entered Skatteverket figures (fallback if no PDF)
   python main.py --input activity.csv --start 2025-01-01 --end 2025-12-31 \\
     --skv-futures-proceeds 147649 --skv-futures-cost 98558 --skv-options-proceeds 683529
 
@@ -100,9 +105,19 @@ Examples:
     # --- Skatteverket reconciliation (all optional) ---
     skv = p.add_argument_group(
         "Skatteverket reconciliation",
-        "Provide control figures reported by IBKR to Skatteverket to validate "
-        "the calculated totals.  All three arguments are optional; omit them to "
-        "skip reconciliation checks.",
+        "Provide your Skatteverket declaration PDF (--tax-pdf) or enter the "
+        "control figures manually (--skv-* flags).  The PDF takes priority; "
+        "manual flags are used as fallback when no PDF is given.",
+    )
+    skv.add_argument(
+        "--tax-pdf",
+        default=None,
+        metavar="FILE",
+        help=(
+            "Path to the Skatteverket declaration PDF (Inkomstdeklaration 1 "
+            "or Kontroll- och inkomstuppgifter).  The parser automatically "
+            "extracts 'Övriga terminer' and 'Övriga optioner' control totals."
+        ),
     )
     skv.add_argument(
         "--skv-futures-proceeds",
@@ -210,19 +225,46 @@ def run(args: argparse.Namespace) -> int:
     # 4. Generate K4 report
     output_paths = generate_k4_report(trades, output_dir, fx_provider=fx_provider)
 
-    # 5. Reconciliation
+    # 5. Resolve Skatteverket control figures
+    #    Priority: --tax-pdf > --skv-* manual flags
+    skv_kwargs: dict = {}
+
+    if args.tax_pdf:
+        tax_pdf_path = Path(args.tax_pdf)
+        if not tax_pdf_path.exists():
+            logger.error("Tax PDF not found: %s", tax_pdf_path)
+            return 1
+        try:
+            skv_data: SkvControlData = parse_skv_pdf(tax_pdf_path)
+        except SkvParseError as exc:
+            logger.error("Failed to parse Skatteverket PDF: %s", exc)
+            return 1
+
+        skv_kwargs = skv_data.as_skv_kwargs()
+
+        if not skv_data.any_found():
+            logger.warning(
+                "No IBKR control totals found in %s.  "
+                "Reconciliation will proceed without Skatteverket figures.",
+                tax_pdf_path.name,
+            )
+        else:
+            logger.info("Skatteverket PDF parsed: %s", skv_data)
+
+    else:
+        # Manual fallback: use --skv-* flags if provided
+        if args.skv_futures_proceeds is not None:
+            skv_kwargs["skv_futures_proceeds"] = args.skv_futures_proceeds
+        if args.skv_futures_cost is not None:
+            skv_kwargs["skv_futures_cost"] = args.skv_futures_cost
+        if args.skv_options_proceeds is not None:
+            skv_kwargs["skv_options_proceeds"] = args.skv_options_proceeds
+
+    # 6. Reconciliation
     #    generate_k4_report already converted trades internally; we need the
     #    K4Trade list to feed into reconciliation.  Re-use the same fx_provider
     #    (rates are fully cached after step 4, so no extra API calls).
     k4_trades = convert_trades_to_sek(trades, fx_provider)
-    skv_kwargs = {}
-    if args.skv_futures_proceeds is not None:
-        skv_kwargs["skv_futures_proceeds"] = args.skv_futures_proceeds
-    if args.skv_futures_cost is not None:
-        skv_kwargs["skv_futures_cost"] = args.skv_futures_cost
-    if args.skv_options_proceeds is not None:
-        skv_kwargs["skv_options_proceeds"] = args.skv_options_proceeds
-
     recon = compute_reconciliation(
         k4_trades,
         tolerance=args.reconciliation_tolerance,
@@ -231,7 +273,7 @@ def run(args: argparse.Namespace) -> int:
     recon_path = write_report(recon, output_dir)
     output_paths["reconciliation_report.txt"] = recon_path
 
-    # 6. Summary
+    # 7. Summary
     sec_a = recon.section_a
     sec_d = recon.section_d
 
@@ -247,7 +289,8 @@ def run(args: argparse.Namespace) -> int:
     print(f"  Section D net profit:   {sec_d.net:>12,.0f} SEK")
     print()
     if recon.diffs:
-        print(f"  Reconciliation with Skatteverket data: {recon.status_label}")
+        src = f" (from {Path(args.tax_pdf).name})" if args.tax_pdf else ""
+        print(f"  Skatteverket validation{src}: {recon.status_label}")
     else:
         print("  Reconciliation: no Skatteverket data provided")
     print()
