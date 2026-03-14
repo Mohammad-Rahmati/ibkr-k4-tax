@@ -1,0 +1,21 @@
+# ibkr-k4-tax dependencies
+# Install with:  pip install -r requirements.txt
+
+# Data manipulation
+pandas>=2.0.0
+
+# HTTP requests (FX API)
+requests>=2.31.0
+
+# Data validation / models
+pydantic>=2.0.0
+
+# Date parsing
+python-dateutil>=2.8.2
+
+# Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0
+
+# Optional: richer test output
+pytest-mock>=3.12.0
