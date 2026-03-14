@@ -12,6 +12,30 @@ from pydantic import BaseModel, Field, field_validator
 
 K4Section = Literal["A", "D"]
 
+# ---------------------------------------------------------------------------
+# Assignment / exercise classification
+# ---------------------------------------------------------------------------
+# IBKR encodes special events in the ``Code`` column of the Trades section.
+# The codes relevant for option lifecycle events are:
+#
+#   Ep  – Expired (option closed by expiry, P&L already in realized_pnl)
+#   A   – Assignment or exercise trigger
+#   O   – Opening trade
+#   C   – Closing trade
+#
+# Combinations seen in real Activity Statements:
+#   C;Ep  – option closed by expiry (short option: full premium collected;
+#            long option: full premium lost)
+#   A;C   – option or futures side consumed by assignment/exercise (pnl=0,
+#            proceeds=0 for the option leg; pnl present for futures leg)
+#   A;O   – underlying security *opened* via assignment (e.g. 100 shares of
+#            QQQ purchased as a result of a short put being assigned).
+#            IBKR encodes the debit as *negative* proceeds.
+#
+# AssignmentType captures which of these lifecycle roles a trade plays.
+# ``None`` means an ordinary opening or closing trade.
+AssignmentType = Literal["Expired", "Assigned", "AssignmentOpen"]
+
 
 class Trade(BaseModel):
     """
@@ -28,6 +52,10 @@ class Trade(BaseModel):
     fees: float
     currency: str
     realized_pnl: float
+    # Raw IBKR code tokens split from the ``Code`` column (e.g. {"A", "C"}).
+    ibkr_codes: frozenset = Field(default_factory=frozenset)
+    # Lifecycle role assigned by assignment_handler.process_assignments().
+    assignment_type: Optional[AssignmentType] = None
 
     @field_validator("symbol", "asset_class", "currency", mode="before")
     @classmethod
@@ -57,6 +85,8 @@ class K4Trade(BaseModel):
     purchase_amount_sek: float = Field(..., description="Cost basis converted to SEK")
     profit_loss_sek: float = Field(..., description="Net profit/loss in SEK")
     k4_section: K4Section
+    # Propagated from the source Trade for audit/reporting purposes.
+    assignment_type: Optional[AssignmentType] = None
 
     @property
     def is_profit(self) -> bool:

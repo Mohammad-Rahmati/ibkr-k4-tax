@@ -116,6 +116,7 @@ TRADES_COL_PRICE         = "t. price"
 TRADES_COL_PROCEEDS      = "proceeds"
 TRADES_COL_COMM_FEE      = "comm/fee"
 TRADES_COL_REALIZED_PNL  = "realized p/l"
+TRADES_COL_CODE          = "code"
 
 # ---------------------------------------------------------------------------
 # Output file names

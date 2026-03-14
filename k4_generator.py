@@ -96,16 +96,29 @@ def convert_trade_to_sek(
     # Fetch rate for the trade's currency → SEK
     rate = fx_provider.get_rate(trade_date, base=trade.currency, target=TARGET_CURRENCY)
 
-    # IBKR Proceeds are negative for purchases and positive for sales.
-    # For K4 we always report:
-    #   sale_amount   = absolute proceeds (what you received)
-    #   purchase_amount = absolute cost basis (what you paid)
-    # The sign of realized_pnl determines profit vs. loss.
-    proceeds_sek = trade.proceeds * rate
-    # cost_basis = proceeds - pnl  (algebraic: what you paid)
-    cost_basis = trade.proceeds - trade.realized_pnl
-    cost_basis_sek = cost_basis * rate
-    profit_loss_sek = proceeds_sek - cost_basis_sek
+    # ---------------------------------------------------------------------------
+    # A;O rows (AssignmentOpen): underlying security *purchased* via assignment.
+    # IBKR encodes the debit as negative proceeds (e.g. proceeds = -51 000).
+    # Standard formula would produce negative sale_amount_sek, which is wrong.
+    # Correct treatment: it's a pure purchase — no sale, no P&L at this point.
+    # ---------------------------------------------------------------------------
+    if trade.assignment_type == "AssignmentOpen":
+        purchase_amount_sek = abs(trade.proceeds) * rate
+        sale_amount_sek = 0.0
+        profit_loss_sek = 0.0
+    else:
+        # IBKR Proceeds are negative for purchases and positive for sales.
+        # For K4 we always report:
+        #   sale_amount   = absolute proceeds (what you received)
+        #   purchase_amount = absolute cost basis (what you paid)
+        # The sign of realized_pnl determines profit vs. loss.
+        proceeds_sek = trade.proceeds * rate
+        # cost_basis = proceeds - pnl  (algebraic: what you paid)
+        cost_basis = trade.proceeds - trade.realized_pnl
+        cost_basis_sek = cost_basis * rate
+        profit_loss_sek = proceeds_sek - cost_basis_sek
+        sale_amount_sek = proceeds_sek
+        purchase_amount_sek = cost_basis_sek
 
     k4_section = classify_k4_section(trade.asset_class)
 
@@ -114,10 +127,11 @@ def convert_trade_to_sek(
         symbol=trade.symbol,
         asset_class=trade.asset_class,
         quantity=trade.quantity,
-        sale_amount_sek=round(proceeds_sek, 2),
-        purchase_amount_sek=round(cost_basis_sek, 2),
+        sale_amount_sek=round(sale_amount_sek, 2),
+        purchase_amount_sek=round(purchase_amount_sek, 2),
         profit_loss_sek=round(profit_loss_sek, 2),
         k4_section=k4_section,
+        assignment_type=trade.assignment_type,
     )
 
 

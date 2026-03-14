@@ -321,6 +321,61 @@ Status: OK (within 5% tolerance)
 
 ---
 
+## Option Assignments & Exercises
+
+IBKR encodes option lifecycle events in the `Code` column of the Trades
+section.  The pipeline automatically detects these events and applies
+the correct tax treatment.
+
+### IBKR code tokens
+
+| Code combination | Meaning                                                              |
+|------------------|----------------------------------------------------------------------|
+| `O`              | Opening trade (ordinary)                                             |
+| `C`              | Closing trade (ordinary)                                             |
+| `C;Ep`           | **Expired** — option closed by expiry; P&L already in *Realized P/L* |
+| `A;C`            | **Assigned/Exercised** — option or futures leg consumed              |
+| `A;O`            | **Assignment Open** — underlying security *purchased* via assignment |
+
+### Event patterns in real Activity Statements
+
+**Equity option assigned (e.g. short put on QQQ):**
+
+| Row | Asset class | Symbol | Code | Proceeds | Realized P/L |
+|-----|-------------|--------|------|----------|--------------|
+| 1 | Equity and Index Options | QQQ 510 P | `A;C` | 0 | 0 |
+| 2 | Stocks | QQQ | `A;O` | **−51 000** | 0 |
+
+> Row 2's proceeds are a *debit* (negative) — IBKR's encoding for a
+> purchase.  Without special handling the standard formula produces a
+> negative `sale_amount_sek`, corrupting reconciliation totals.
+
+**Options-on-futures assigned (e.g. short MES call):**
+
+| Row | Asset class | Symbol | Code | Proceeds | Realized P/L |
+|-----|-------------|--------|------|----------|--------------|
+| 1 | Options On Futures | MES 5945 C | `A;C` | 0 | 0 |
+| 2 | Futures | MESM5 | `A;C` | 59 450 | 512.88 |
+
+**Option expired worthless:**
+
+| Row | Asset class | Symbol | Code | Proceeds | Realized P/L |
+|-----|-------------|--------|------|----------|--------------|
+| 1 | Equity and Index Options | SPX 4500 C | `C;Ep` | 0 | 350 |
+
+### How `assignment_handler.py` handles each case
+
+| `assignment_type` | Trigger | K4 treatment |
+|-------------------|---------|--------------|
+| `"Expired"` | `Ep` in codes | Normal formula; P&L from `realized_pnl` is correct already |
+| `"Assigned"` | `A` + `C` in codes | Normal formula; proceeds=0, pnl=0 for equity legs → no double-count |
+| `"AssignmentOpen"` | `A` + `O` in codes | `purchase_amount_sek = abs(proceeds) × rate`; `sale_amount_sek = 0` |
+
+The `assignment_type` value is stored on both `Trade` and `K4Trade` objects
+for audit purposes and appears in `trades_sek.csv`.
+
+---
+
 ## Skatteverket Reconciliation
 
 Every year IBKR submits summary data to Skatteverket on behalf of Swedish
@@ -364,22 +419,24 @@ python main.py --input data/raw/activity.csv --start 2025-01-01 --end 2025-12-31
 
 ```
 ibkr-k4-tax/
-├── main.py              # CLI entry point & pipeline orchestration
-├── parser.py            # IBKR Activity Statement CSV parser
-├── fx.py                # Historical FX rates — Riksbank SWEA API + cache
-├── k4_generator.py      # SEK conversion, K4 categorisation, CSV/JSON export
-├── reconciliation.py    # Section A/D totals, derivative breakdown, SKV diffs
-├── skv_parser.py        # Skatteverket declaration PDF parser (pdfplumber)
-├── models.py            # Pydantic data models (Trade, K4Trade, …)
-├── utils.py             # Logging helpers, date parsing, numeric utilities
-├── config.py            # All configuration constants
+├── main.py                  # CLI entry point & pipeline orchestration
+├── parser.py                # IBKR Activity Statement CSV parser
+├── assignment_handler.py    # Option assignment / exercise / expiry annotation
+├── fx.py                    # Historical FX rates — Riksbank SWEA API + cache
+├── k4_generator.py          # SEK conversion, K4 categorisation, CSV/JSON export
+├── reconciliation.py        # Section A/D totals, derivative breakdown, SKV diffs
+├── skv_parser.py            # Skatteverket declaration PDF parser (pdfplumber)
+├── models.py                # Pydantic data models (Trade, K4Trade, …)
+├── utils.py                 # Logging helpers, date parsing, numeric utilities
+├── config.py                # All configuration constants
 │
 ├── tests/
-│   ├── test_parser.py         # 24 tests — IBKR CSV parsing
-│   ├── test_fx.py             # 17 tests — Riksbank FX API + caching
-│   ├── test_k4.py             # 29 tests — SEK conversion & K4 logic
-│   ├── test_reconciliation.py # 48 tests — reconciliation module
-│   └── test_skv_parser.py     # 38 tests — Skatteverket PDF parser
+│   ├── test_parser.py              # 24 tests — IBKR CSV parsing
+│   ├── test_fx.py                  # 17 tests — Riksbank FX API + caching
+│   ├── test_k4.py                  # 29 tests — SEK conversion & K4 logic
+│   ├── test_reconciliation.py      # 48 tests — reconciliation module
+│   ├── test_skv_parser.py          # 38 tests — Skatteverket PDF parser
+│   └── test_assignment_handler.py  # 42 tests — assignment / exercise handling
 │
 ├── data/
 │   ├── raw/           # Place IBKR CSV exports and Skatteverket PDFs here  (git-ignored except *.pdf)
@@ -396,7 +453,7 @@ ibkr-k4-tax/
 ```bash
 conda activate ibkr-k4-tax
 
-# Run all 156 tests
+# Run all 198 tests
 pytest
 
 # Verbose output

@@ -19,6 +19,7 @@ from utils import configure_logging, parse_date, resolve_output_dir
 from parser import load_trades
 from fx import FXRateProvider
 from k4_generator import generate_k4_report, convert_trades_to_sek, build_symbol_summaries, build_section_summaries
+from assignment_handler import process_assignments
 from reconciliation import compute_reconciliation, write_report, format_report
 from skv_parser import parse_skv_pdf, SkvControlData, SkvParseError
 
@@ -217,6 +218,9 @@ def run(args: argparse.Namespace) -> int:
         # Still generate empty output files so the pipeline is idempotent.
 
     logger.info("Found %d trades.", len(trades))
+
+    # 2b. Annotate assignment / exercise / expiry events
+    trades = process_assignments(trades)
 
     # 3. Build FX provider
     fx_kwargs: dict = {}

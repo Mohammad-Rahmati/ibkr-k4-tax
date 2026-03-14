@@ -50,6 +50,7 @@ from config import (
     TRADES_COL_COMM_FEE,
     TRADES_COL_CURRENCY,
     TRADES_COL_REALIZED_PNL,
+    TRADES_COL_CODE,
 )
 from models import Trade
 
@@ -220,6 +221,12 @@ def _parse_trade_row(row: dict[str, str], row_index: int) -> "Trade | None":
             or row.get("comm in usd", "")
             or "0"
         ).strip() or "0"
+        # Parse IBKR Code column (e.g. "A;C", "C;Ep", "O").
+        code_raw = row.get(TRADES_COL_CODE, "").strip()
+        ibkr_codes: frozenset = frozenset(
+            token.strip() for token in code_raw.split(";") if token.strip()
+        )
+
         trade = Trade(
             date=trade_date,
             symbol=row.get(TRADES_COL_SYMBOL, "").strip(),
@@ -230,6 +237,7 @@ def _parse_trade_row(row: dict[str, str], row_index: int) -> "Trade | None":
             fees=fees_raw,
             currency=row.get(TRADES_COL_CURRENCY, "").strip(),
             realized_pnl=row.get(TRADES_COL_REALIZED_PNL, "0") or "0",
+            ibkr_codes=ibkr_codes,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Row %d: validation error: %s | raw=%s", row_index, exc, row)
