@@ -123,6 +123,42 @@ TRADES_COL_REALIZED_PNL  = "realized p/l"
 OUTPUT_TRADES_SEK = "trades_sek.csv"
 OUTPUT_K4_SUMMARY_CSV = "k4_summary.csv"
 OUTPUT_K4_SUMMARY_JSON = "k4_summary.json"
+OUTPUT_RECONCILIATION_REPORT = "reconciliation_report.txt"
+
+# ---------------------------------------------------------------------------
+# Asset-class groupings used by the reconciliation module
+#
+# IBKR reports to Skatteverket split derivatives into:
+#   • Terminer  (futures / forward contracts)
+#   • Optioner  (options)
+#
+# The sets below map every normalised IBKR asset-class name to one of those
+# groups.  Values are upper-cased to match the parser's normalisation.
+# ---------------------------------------------------------------------------
+FUTURES_ASSET_CLASSES: frozenset[str] = frozenset(
+    {
+        # Full names (Activity Statement)
+        "FUTURES",
+        "FUTURE OPTIONS",
+        "OPTIONS ON FUTURES",
+        # Short codes (Flex Query / legacy)
+        "FUT",
+        "FOP",
+    }
+)
+
+OPTIONS_ASSET_CLASSES: frozenset[str] = frozenset(
+    {
+        # Full names (Activity Statement)
+        "EQUITY AND INDEX OPTIONS",
+        # Short codes
+        "OPT",
+    }
+)
+
+# Default tolerance (fraction) for reconciliation checks.
+# A deviation > this fraction triggers a WARNING status.
+RECONCILIATION_TOLERANCE = 0.05  # 5 %
 
 # ---------------------------------------------------------------------------
 # Logging

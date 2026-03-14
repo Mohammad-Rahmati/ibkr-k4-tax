@@ -18,7 +18,8 @@ from pathlib import Path
 from utils import configure_logging, parse_date, resolve_output_dir
 from parser import load_trades
 from fx import FXRateProvider
-from k4_generator import generate_k4_report
+from k4_generator import generate_k4_report, convert_trades_to_sek, build_symbol_summaries, build_section_summaries
+from reconciliation import compute_reconciliation, write_report, format_report
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,10 @@ Examples:
 
   # Specify a custom output directory
   python main.py --input activity.csv --start 2025-01-01 --end 2025-12-31 --output ./reports/2025
+
+  # With Skatteverket reconciliation figures
+  python main.py --input activity.csv --start 2025-01-01 --end 2025-12-31 \\
+    --skv-futures-proceeds 147649 --skv-futures-cost 98558 --skv-options-proceeds 683529
 
   # Debug logging
   python main.py --input activity.csv --start 2025-01-01 --end 2025-12-31 --log-level DEBUG
@@ -90,6 +95,54 @@ Examples:
         default=None,
         metavar="FILE",
         help="Override the default FX cache file location.",
+    )
+
+    # --- Skatteverket reconciliation (all optional) ---
+    skv = p.add_argument_group(
+        "Skatteverket reconciliation",
+        "Provide control figures reported by IBKR to Skatteverket to validate "
+        "the calculated totals.  All three arguments are optional; omit them to "
+        "skip reconciliation checks.",
+    )
+    skv.add_argument(
+        "--skv-futures-proceeds",
+        type=float,
+        default=None,
+        metavar="SEK",
+        help=(
+            "Skatteverket control figure: "
+            "'Övriga terminer – erhållen ersättning' (futures proceeds, SEK)."
+        ),
+    )
+    skv.add_argument(
+        "--skv-futures-cost",
+        type=float,
+        default=None,
+        metavar="SEK",
+        help=(
+            "Skatteverket control figure: "
+            "'Övriga terminer – erlagd ersättning' (futures cost, SEK)."
+        ),
+    )
+    skv.add_argument(
+        "--skv-options-proceeds",
+        type=float,
+        default=None,
+        metavar="SEK",
+        help=(
+            "Skatteverket control figure: "
+            "'Övriga optioner' (options proceeds, SEK)."
+        ),
+    )
+    skv.add_argument(
+        "--reconciliation-tolerance",
+        type=float,
+        default=0.05,
+        metavar="FRACTION",
+        help=(
+            "Maximum acceptable relative deviation before a reconciliation "
+            "check is flagged as a warning (default: 0.05 = 5%%)."
+        ),
     )
 
     return p
@@ -157,13 +210,52 @@ def run(args: argparse.Namespace) -> int:
     # 4. Generate K4 report
     output_paths = generate_k4_report(trades, output_dir, fx_provider=fx_provider)
 
-    # 5. Summary
+    # 5. Reconciliation
+    #    generate_k4_report already converted trades internally; we need the
+    #    K4Trade list to feed into reconciliation.  Re-use the same fx_provider
+    #    (rates are fully cached after step 4, so no extra API calls).
+    k4_trades = convert_trades_to_sek(trades, fx_provider)
+    skv_kwargs = {}
+    if args.skv_futures_proceeds is not None:
+        skv_kwargs["skv_futures_proceeds"] = args.skv_futures_proceeds
+    if args.skv_futures_cost is not None:
+        skv_kwargs["skv_futures_cost"] = args.skv_futures_cost
+    if args.skv_options_proceeds is not None:
+        skv_kwargs["skv_options_proceeds"] = args.skv_options_proceeds
+
+    recon = compute_reconciliation(
+        k4_trades,
+        tolerance=args.reconciliation_tolerance,
+        **skv_kwargs,
+    )
+    recon_path = write_report(recon, output_dir)
+    output_paths["reconciliation_report.txt"] = recon_path
+
+    # 6. Summary
+    sec_a = recon.section_a
+    sec_d = recon.section_d
+
     print()
     print("=" * 60)
-    print("  ibkr-k4-tax  —  Output files")
+    print("  ibkr-k4-tax  —  Summary")
+    print("=" * 60)
+    print(f"  Trades processed:       {recon.trade_count:,}")
+    print(f"  Section A profit:       {sec_a.profit:>12,.0f} SEK")
+    print(f"  Section A loss:         {sec_a.loss:>12,.0f} SEK")
+    print(f"  Section D profit:       {sec_d.profit:>12,.0f} SEK")
+    print(f"  Section D loss:         {sec_d.loss:>12,.0f} SEK")
+    print(f"  Section D net profit:   {sec_d.net:>12,.0f} SEK")
+    print()
+    if recon.diffs:
+        print(f"  Reconciliation with Skatteverket data: {recon.status_label}")
+    else:
+        print("  Reconciliation: no Skatteverket data provided")
+    print()
+    print("=" * 60)
+    print("  Output files")
     print("=" * 60)
     for name, path in output_paths.items():
-        print(f"  {name:<30}  {path}")
+        print(f"  {name:<34}  {path}")
     print("=" * 60)
 
     return 0
