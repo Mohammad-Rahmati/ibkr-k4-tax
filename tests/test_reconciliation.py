@@ -268,8 +268,10 @@ class TestComputeReconciliationDerivatives:
 
 class TestSkvComparison:
     def _base_trades(self):
+        # futures trade: symbol "FUT1", net P&L = 148100 → skv_proceeds = 148100
+        # options trade: sale = 683000 → skv_proceeds = 683000 (positive only)
         return [
-            _futures_trade(sale=148100.0, cost=98500.0, pnl=49600.0),
+            _futures_trade(sale=148100.0, cost=0.0, pnl=148100.0),
             _options_trade(sale=683000.0, cost=500000.0, pnl=183000.0),
         ]
 
@@ -359,9 +361,10 @@ class TestSkvComparison:
 
 class TestFormatReport:
     def _result(self, **skv_kwargs) -> ReconciliationResult:
+        # futures trade: pnl=148100 → skv_proceeds=148100 (per-symbol net P&L)
         trades = [
             _stock_trade(sale=317786.76, cost=297486.66, pnl=20300.10),
-            _futures_trade(sale=148100.0, cost=98500.0, pnl=49600.0),
+            _futures_trade(sale=148100.0, cost=0.0, pnl=148100.0),
             _options_trade(sale=683000.0, cost=500000.0, pnl=183000.0),
             _options_trade(sale=200.0, cost=700.0, pnl=-500.0),
         ]
@@ -409,13 +412,13 @@ class TestFormatReport:
     def test_difference_sign_positive(self):
         """Calculated > SKV → positive difference."""
         report = format_report(self._result(skv_futures_proceeds=100_000.0))
-        # futures proceeds = 148100, skv = 100000, diff = +48100
+        # futures skv_proceeds = 148100 (pnl), skv = 100000, diff = +48100
         assert "+48,100" in report
 
     def test_difference_sign_negative(self):
         """Calculated < SKV → negative difference."""
         report = format_report(self._result(skv_futures_proceeds=200_000.0))
-        # futures proceeds = 148100, skv = 200000, diff = -51900
+        # futures skv_proceeds = 148100, skv = 200000, diff = -51900
         assert "-51,900" in report
 
 
@@ -423,22 +426,24 @@ class TestFormatReport:
 # SKV gross-cashflow sign-split
 # ---------------------------------------------------------------------------
 
-def _futures_inflow(amount: float) -> K4Trade:
-    """Futures trade with positive sale_amount_sek → contributes to skv_proceeds."""
+def _futures_inflow(amount: float, symbol: str = "FWIN") -> K4Trade:
+    """Futures trade contributing a positive net P&L for its symbol → skv_proceeds."""
     return _make_trade(
         asset_class="FUTURES",
         k4_section="D",
+        symbol=symbol,
         sale_amount_sek=amount,
         purchase_amount_sek=0.0,
         profit_loss_sek=amount,
     )
 
 
-def _futures_outflow(amount: float) -> K4Trade:
-    """Futures trade with negative sale_amount_sek → contributes to skv_cost (abs)."""
+def _futures_outflow(amount: float, symbol: str = "FWOUT") -> K4Trade:
+    """Futures trade contributing a negative net P&L for its symbol → skv_cost."""
     return _make_trade(
         asset_class="FUTURES",
         k4_section="D",
+        symbol=symbol,
         sale_amount_sek=-abs(amount),
         purchase_amount_sek=0.0,
         profit_loss_sek=-abs(amount),
@@ -482,17 +487,20 @@ class TestSkvGrossCashflow:
 
     def test_mixed_futures_split_correctly(self):
         trades = [
-            _futures_inflow(30000.0),
-            _futures_inflow(17649.0),
-            _futures_outflow(50000.0),
-            _futures_outflow(48558.0),
+            _futures_inflow(30000.0, symbol="SYMA"),
+            _futures_inflow(17649.0, symbol="SYMB"),
+            _futures_outflow(50000.0, symbol="SYMC"),
+            _futures_outflow(48558.0, symbol="SYMD"),
         ]
         result = compute_reconciliation(trades)
         assert result.futures.skv_proceeds == pytest.approx(47649.0)
         assert result.futures.skv_cost == pytest.approx(98558.0)
 
     def test_skv_proceeds_matches_control_figure(self):
-        trades = [_futures_inflow(147649.0), _futures_outflow(98558.0)]
+        trades = [
+            _futures_inflow(147649.0, symbol="SYMA"),
+            _futures_outflow(98558.0, symbol="SYMB"),
+        ]
         result = compute_reconciliation(
             trades,
             skv_futures_proceeds=147649.0,
@@ -501,8 +509,8 @@ class TestSkvGrossCashflow:
         assert result.all_ok is True
 
     def test_skv_cost_diff_uses_abs_negative(self):
-        """ControlDiff.calculated for 'Futures cost' must be abs(negative proceeds)."""
-        trades = [_futures_outflow(98558.0)]
+        """ControlDiff.calculated for 'Futures cost' must be abs(negative per-symbol P&L)."""
+        trades = [_futures_outflow(98558.0, symbol="LOSSYM")]
         result = compute_reconciliation(trades, skv_futures_cost=98558.0)
         diff = next(d for d in result.diffs if d.label == "Futures cost")
         assert diff.calculated == pytest.approx(98558.0)
@@ -531,11 +539,14 @@ class TestSkvGrossCashflow:
 
     def test_k4_proceeds_unaffected_by_sign_split(self):
         """K4 proceeds (sale_amount_sek sum) still includes all signs for accounting."""
-        trades = [_futures_inflow(100.0), _futures_outflow(40.0)]
+        trades = [
+            _futures_inflow(100.0, symbol="SYMA"),
+            _futures_outflow(40.0, symbol="SYMB"),
+        ]
         result = compute_reconciliation(trades)
         # K4 proceeds = 100 + (-40) = 60
         assert result.futures.proceeds == pytest.approx(60.0)
-        # SKV split: proceeds=100, cost=40
+        # SKV split: proceeds=100 (SYMA net P&L), cost=40 (SYMB net P&L abs)
         assert result.futures.skv_proceeds == pytest.approx(100.0)
         assert result.futures.skv_cost == pytest.approx(40.0)
 
@@ -552,8 +563,8 @@ class TestSkvGrossCashflow:
         assert result.futures.skv_proceeds == pytest.approx(0.0)
         assert result.futures.skv_cost == pytest.approx(0.0)
 
-    def test_fop_split_as_futures(self):
-        """OPTIONS ON FUTURES must use futures skv buckets."""
+    def test_fop_counted_in_futures_k4_breakdown(self):
+        """OPTIONS ON FUTURES still appear in futures K4 breakdown (trade_count/proceeds)."""
         trades = [
             _make_trade(
                 asset_class="OPTIONS ON FUTURES",
@@ -562,21 +573,44 @@ class TestSkvGrossCashflow:
                 purchase_amount_sek=0.0,
                 profit_loss_sek=5000.0,
             ),
+        ]
+        result = compute_reconciliation(trades)
+        assert result.futures.trade_count == 1
+        assert result.options.trade_count == 0
+
+    def test_fop_skv_proceeds_go_to_options(self):
+        """For SKV reporting, OPTIONS ON FUTURES premiums are Optioner, not Terminer."""
+        trades = [
             _make_trade(
                 asset_class="OPTIONS ON FUTURES",
                 k4_section="D",
+                symbol="FOPA",
+                sale_amount_sek=5000.0,
+                purchase_amount_sek=0.0,
+                profit_loss_sek=5000.0,
+            ),
+            _make_trade(
+                asset_class="OPTIONS ON FUTURES",
+                k4_section="D",
+                symbol="FOPB",
                 sale_amount_sek=-3000.0,
                 purchase_amount_sek=0.0,
                 profit_loss_sek=-3000.0,
             ),
         ]
         result = compute_reconciliation(trades)
-        assert result.futures.skv_proceeds == pytest.approx(5000.0)
-        assert result.futures.skv_cost == pytest.approx(3000.0)
+        # FOP positive premiums → options skv_proceeds
+        assert result.options.skv_proceeds == pytest.approx(5000.0)
+        # FOP negative premiums → not counted (only positive reported)
+        assert result.futures.skv_proceeds == pytest.approx(0.0)
+        assert result.futures.skv_cost == pytest.approx(0.0)
 
     def test_format_report_shows_skv_proceeds(self):
         """format_report must include SKV proceeds in DERIVATIVES BREAKDOWN."""
-        trades = [_futures_inflow(147649.0), _futures_outflow(98558.0)]
+        trades = [
+            _futures_inflow(147649.0, symbol="SYMA"),
+            _futures_outflow(98558.0, symbol="SYMB"),
+        ]
         result = compute_reconciliation(trades)
         report = format_report(result)
         assert "SKV proceeds" in report

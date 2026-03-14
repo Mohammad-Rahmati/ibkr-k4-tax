@@ -29,6 +29,7 @@ This module:
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -40,6 +41,17 @@ from config import (
     RECONCILIATION_TOLERANCE,
 )
 from models import K4Trade
+
+# ---------------------------------------------------------------------------
+# SKV reporting sets
+# ---------------------------------------------------------------------------
+# Skatteverket groups OPTIONS ON FUTURES (FOP) with *Optioner*, not *Terminer*.
+# These constants are used only for the SKV gross-cashflow split; the K4 section
+# breakdown continues to use FUTURES_ASSET_CLASSES / OPTIONS_ASSET_CLASSES from config.
+_SKV_TERMINER_CLASSES: frozenset[str] = frozenset({"FUTURES", "FUT", "FUTURE OPTIONS"})
+_SKV_OPTIONER_CLASSES: frozenset[str] = frozenset(
+    {"EQUITY AND INDEX OPTIONS", "OPT", "OPTIONS ON FUTURES", "FOP"}
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,14 +73,15 @@ class DerivativeBreakdown:
 
     Skatteverket gross-cashflow amounts
     ------------------------------------
-    skv_proceeds : sum of positive sale_amount_sek values only.
-        Corresponds to "erhållen ersättning" (inflows / receipts).
-    skv_cost     : sum of abs(negative sale_amount_sek) values only.
-        Corresponds to "erlagd ersättning" (outflows / payments).
-
-    These two fields are what IBKR reports to Skatteverket and are used
-    exclusively for reconciliation with the control figures in the PDF.
-    They deliberately ignore cost basis — they are *gross cash flows*.
+    skv_proceeds : For *futures* (Terminer) — sum of per-symbol net
+        ``profit_loss_sek`` values that are positive.  For *options*
+        (Optioner, including FOP) — sum of positive ``sale_amount_sek``
+        values (option premiums received).  Corresponds to "erhållen
+        ersättning" reported to Skatteverket.
+    skv_cost : For futures only — sum of abs(per-symbol net
+        ``profit_loss_sek``) values that are negative.  Corresponds to
+        "erlagd ersättning" reported to Skatteverket.  Not applicable for
+        options (IBKR does not report an options cost figure to SKV).
     """
 
     asset_type: str          # human label, e.g. "Futures" or "Options"
@@ -221,6 +234,10 @@ def compute_reconciliation(
     futures = DerivativeBreakdown(asset_type="Futures")
     options = DerivativeBreakdown(asset_type="Options")
 
+    # Per-symbol net P&L accumulator for futures SKV computation.
+    # Keyed by symbol; value is the running sum of profit_loss_sek.
+    _fut_sym_pnl: dict[str, float] = defaultdict(float)
+
     for t in k4_trades:
         asset_upper = t.asset_class.upper().strip()
 
@@ -234,7 +251,7 @@ def compute_reconciliation(
             target_sec.loss += abs(t.profit_loss_sek)
         target_sec.trade_count += 1
 
-        # --- Derivative type breakdown ---
+        # --- Derivative type breakdown (K4 accounting) ---
         if asset_upper in FUTURES_ASSET_CLASSES:
             futures.proceeds += t.sale_amount_sek
             futures.cost += t.purchase_amount_sek
@@ -243,11 +260,6 @@ def compute_reconciliation(
             else:
                 futures.loss += abs(t.profit_loss_sek)
             futures.trade_count += 1
-            # SKV gross-cashflow split: positive proceeds → erhållen; negative → erlagd
-            if t.sale_amount_sek > 0:
-                futures.skv_proceeds += t.sale_amount_sek
-            else:
-                futures.skv_cost += abs(t.sale_amount_sek)
 
         elif asset_upper in OPTIONS_ASSET_CLASSES:
             options.proceeds += t.sale_amount_sek
@@ -257,9 +269,23 @@ def compute_reconciliation(
             else:
                 options.loss += abs(t.profit_loss_sek)
             options.trade_count += 1
-            # SKV gross-cashflow split: only positive side reported by IBKR
+
+        # --- SKV gross-cashflow split ---
+        # Futures (Terminer): accumulate per-symbol net P&L; sign-split after the loop.
+        if asset_upper in _SKV_TERMINER_CLASSES:
+            _fut_sym_pnl[t.symbol] += t.profit_loss_sek
+
+        # Options (Optioner): includes FOP; only positive premiums are reported.
+        elif asset_upper in _SKV_OPTIONER_CLASSES:
             if t.sale_amount_sek > 0:
                 options.skv_proceeds += t.sale_amount_sek
+
+    # Futures SKV split: sum positive / negative per-symbol net P&L values.
+    for sym_pnl in _fut_sym_pnl.values():
+        if sym_pnl > 0:
+            futures.skv_proceeds += sym_pnl
+        elif sym_pnl < 0:
+            futures.skv_cost += abs(sym_pnl)
 
     # Round all float fields
     for obj in (sec_a, sec_d, futures, options):
