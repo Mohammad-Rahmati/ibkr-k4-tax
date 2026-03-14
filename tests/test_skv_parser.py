@@ -428,15 +428,27 @@ class TestIntegrationWithReconciliation:
         from datetime import datetime
         from reconciliation import compute_reconciliation
 
+        # Positive sale_amount_sek → SKV "erhållen ersättning" (proceeds inflow)
+        # Negative sale_amount_sek → SKV "erlagd ersättning" (cost outflow, abs value)
         trades = [
             K4Trade(
                 date=datetime(2025, 3, 15),
                 symbol="ES",
                 asset_class="FUTURES",
                 quantity=5.0,
-                sale_amount_sek=147649.0,
-                purchase_amount_sek=98558.0,
-                profit_loss_sek=49091.0,
+                sale_amount_sek=147649.0,   # positive → skv_proceeds
+                purchase_amount_sek=0.0,
+                profit_loss_sek=147649.0,
+                k4_section="D",
+            ),
+            K4Trade(
+                date=datetime(2025, 3, 20),
+                symbol="ES",
+                asset_class="FUTURES",
+                quantity=5.0,
+                sale_amount_sek=-98558.0,   # negative → skv_cost (abs = 98558)
+                purchase_amount_sek=0.0,
+                profit_loss_sek=-98558.0,
                 k4_section="D",
             ),
             K4Trade(
@@ -444,7 +456,7 @@ class TestIntegrationWithReconciliation:
                 symbol="SPX",
                 asset_class="EQUITY AND INDEX OPTIONS",
                 quantity=10.0,
-                sale_amount_sek=683529.0,
+                sale_amount_sek=683529.0,   # positive → skv_proceeds
                 purchase_amount_sek=500000.0,
                 profit_loss_sek=183529.0,
                 k4_section="D",

@@ -53,14 +53,33 @@ class DerivativeBreakdown:
     """
     Aggregated totals for a single derivative type (futures or options)
     expressed in SEK.
+
+    K4 amounts
+    ----------
+    proceeds / cost : sum of sale_amount_sek / purchase_amount_sek (K4 book
+        values — always positive after assignment-open adjustment).
+
+    Skatteverket gross-cashflow amounts
+    ------------------------------------
+    skv_proceeds : sum of positive sale_amount_sek values only.
+        Corresponds to "erhållen ersättning" (inflows / receipts).
+    skv_cost     : sum of abs(negative sale_amount_sek) values only.
+        Corresponds to "erlagd ersättning" (outflows / payments).
+
+    These two fields are what IBKR reports to Skatteverket and are used
+    exclusively for reconciliation with the control figures in the PDF.
+    They deliberately ignore cost basis — they are *gross cash flows*.
     """
 
     asset_type: str          # human label, e.g. "Futures" or "Options"
-    proceeds: float = 0.0    # sum of sale_amount_sek
-    cost: float = 0.0        # sum of purchase_amount_sek
+    proceeds: float = 0.0    # sum of sale_amount_sek  (K4 book value)
+    cost: float = 0.0        # sum of purchase_amount_sek  (K4 cost basis)
     profit: float = 0.0
     loss: float = 0.0
     trade_count: int = 0
+    # SKV gross-cashflow split (sign-based, used for reconciliation only)
+    skv_proceeds: float = 0.0   # sum of positive sale_amount_sek
+    skv_cost: float = 0.0       # sum of abs(negative sale_amount_sek)
 
 
 @dataclass
@@ -224,6 +243,11 @@ def compute_reconciliation(
             else:
                 futures.loss += abs(t.profit_loss_sek)
             futures.trade_count += 1
+            # SKV gross-cashflow split: positive proceeds → erhållen; negative → erlagd
+            if t.sale_amount_sek > 0:
+                futures.skv_proceeds += t.sale_amount_sek
+            else:
+                futures.skv_cost += abs(t.sale_amount_sek)
 
         elif asset_upper in OPTIONS_ASSET_CLASSES:
             options.proceeds += t.sale_amount_sek
@@ -233,11 +257,17 @@ def compute_reconciliation(
             else:
                 options.loss += abs(t.profit_loss_sek)
             options.trade_count += 1
+            # SKV gross-cashflow split: only positive side reported by IBKR
+            if t.sale_amount_sek > 0:
+                options.skv_proceeds += t.sale_amount_sek
 
     # Round all float fields
     for obj in (sec_a, sec_d, futures, options):
         for attr in ("proceeds", "cost", "profit", "loss"):
             setattr(obj, attr, round(getattr(obj, attr), 2))
+    for obj in (futures, options):
+        obj.skv_proceeds = round(obj.skv_proceeds, 2)
+        obj.skv_cost = round(obj.skv_cost, 2)
 
     # --- Skatteverket comparisons ---
     diffs: list[ControlDiff] = []
@@ -246,7 +276,7 @@ def compute_reconciliation(
         diffs.append(
             ControlDiff(
                 label="Futures proceeds",
-                calculated=futures.proceeds,
+                calculated=futures.skv_proceeds,
                 skv=skv_futures_proceeds,
                 tolerance=tolerance,
             )
@@ -256,7 +286,7 @@ def compute_reconciliation(
         diffs.append(
             ControlDiff(
                 label="Futures cost",
-                calculated=futures.cost,
+                calculated=futures.skv_cost,
                 skv=skv_futures_cost,
                 tolerance=tolerance,
             )
@@ -266,7 +296,7 @@ def compute_reconciliation(
         diffs.append(
             ControlDiff(
                 label="Options proceeds",
-                calculated=options.proceeds,
+                calculated=options.skv_proceeds,
                 skv=skv_options_proceeds,
                 tolerance=tolerance,
             )
@@ -353,11 +383,14 @@ def format_report(result: ReconciliationResult) -> str:
     lines.append("DERIVATIVES BREAKDOWN")
     for breakdown in (result.futures, result.options):
         lines.append(f"  {breakdown.asset_type}")
-        lines.append(f"    Trades:   {breakdown.trade_count:,}")
-        lines.append(f"    Proceeds: {_fmt(breakdown.proceeds)} SEK")
-        lines.append(f"    Cost:     {_fmt(breakdown.cost)} SEK")
-        lines.append(f"    Profit:   {_fmt(breakdown.profit)} SEK")
-        lines.append(f"    Loss:     {_fmt(breakdown.loss)} SEK")
+        lines.append(f"    Trades:        {breakdown.trade_count:,}")
+        lines.append(f"    Proceeds (K4): {_fmt(breakdown.proceeds)} SEK")
+        lines.append(f"    Cost (K4):     {_fmt(breakdown.cost)} SEK")
+        lines.append(f"    Profit:        {_fmt(breakdown.profit)} SEK")
+        lines.append(f"    Loss:          {_fmt(breakdown.loss)} SEK")
+        lines.append(f"    SKV proceeds:  {_fmt(breakdown.skv_proceeds)} SEK")
+        if breakdown.asset_type == "Futures":
+            lines.append(f"    SKV cost:      {_fmt(breakdown.skv_cost)} SEK")
     lines.append("")
 
     # Skatteverket control data (only when provided)

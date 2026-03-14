@@ -420,6 +420,172 @@ class TestFormatReport:
 
 
 # ---------------------------------------------------------------------------
+# SKV gross-cashflow sign-split
+# ---------------------------------------------------------------------------
+
+def _futures_inflow(amount: float) -> K4Trade:
+    """Futures trade with positive sale_amount_sek → contributes to skv_proceeds."""
+    return _make_trade(
+        asset_class="FUTURES",
+        k4_section="D",
+        sale_amount_sek=amount,
+        purchase_amount_sek=0.0,
+        profit_loss_sek=amount,
+    )
+
+
+def _futures_outflow(amount: float) -> K4Trade:
+    """Futures trade with negative sale_amount_sek → contributes to skv_cost (abs)."""
+    return _make_trade(
+        asset_class="FUTURES",
+        k4_section="D",
+        sale_amount_sek=-abs(amount),
+        purchase_amount_sek=0.0,
+        profit_loss_sek=-abs(amount),
+    )
+
+
+def _options_inflow(amount: float) -> K4Trade:
+    """Options trade with positive sale_amount_sek → contributes to skv_proceeds."""
+    return _make_trade(
+        asset_class="EQUITY AND INDEX OPTIONS",
+        k4_section="D",
+        sale_amount_sek=amount,
+        purchase_amount_sek=0.0,
+        profit_loss_sek=amount,
+    )
+
+
+def _options_outflow(amount: float) -> K4Trade:
+    """Options trade with negative sale_amount_sek → not counted in SKV proceeds."""
+    return _make_trade(
+        asset_class="EQUITY AND INDEX OPTIONS",
+        k4_section="D",
+        sale_amount_sek=-abs(amount),
+        purchase_amount_sek=0.0,
+        profit_loss_sek=-abs(amount),
+    )
+
+
+class TestSkvGrossCashflow:
+    """Verify the sign-split logic that mirrors Skatteverket's gross-cashflow reporting."""
+
+    def test_positive_futures_goes_to_skv_proceeds(self):
+        result = compute_reconciliation([_futures_inflow(10000.0)])
+        assert result.futures.skv_proceeds == pytest.approx(10000.0)
+        assert result.futures.skv_cost == pytest.approx(0.0)
+
+    def test_negative_futures_goes_to_skv_cost(self):
+        result = compute_reconciliation([_futures_outflow(8000.0)])
+        assert result.futures.skv_proceeds == pytest.approx(0.0)
+        assert result.futures.skv_cost == pytest.approx(8000.0)
+
+    def test_mixed_futures_split_correctly(self):
+        trades = [
+            _futures_inflow(30000.0),
+            _futures_inflow(17649.0),
+            _futures_outflow(50000.0),
+            _futures_outflow(48558.0),
+        ]
+        result = compute_reconciliation(trades)
+        assert result.futures.skv_proceeds == pytest.approx(47649.0)
+        assert result.futures.skv_cost == pytest.approx(98558.0)
+
+    def test_skv_proceeds_matches_control_figure(self):
+        trades = [_futures_inflow(147649.0), _futures_outflow(98558.0)]
+        result = compute_reconciliation(
+            trades,
+            skv_futures_proceeds=147649.0,
+            skv_futures_cost=98558.0,
+        )
+        assert result.all_ok is True
+
+    def test_skv_cost_diff_uses_abs_negative(self):
+        """ControlDiff.calculated for 'Futures cost' must be abs(negative proceeds)."""
+        trades = [_futures_outflow(98558.0)]
+        result = compute_reconciliation(trades, skv_futures_cost=98558.0)
+        diff = next(d for d in result.diffs if d.label == "Futures cost")
+        assert diff.calculated == pytest.approx(98558.0)
+        assert diff.ok is True
+
+    def test_options_positive_goes_to_skv_proceeds(self):
+        result = compute_reconciliation([_options_inflow(683529.0)])
+        assert result.options.skv_proceeds == pytest.approx(683529.0)
+
+    def test_options_negative_not_in_skv_proceeds(self):
+        """Negative options proceeds (purchases) are NOT reported by IBKR to SKV."""
+        result = compute_reconciliation([_options_outflow(5000.0)])
+        assert result.options.skv_proceeds == pytest.approx(0.0)
+
+    def test_options_mixed_only_positive_summed(self):
+        trades = [_options_inflow(600000.0), _options_outflow(50000.0)]
+        result = compute_reconciliation(trades)
+        assert result.options.skv_proceeds == pytest.approx(600000.0)
+
+    def test_options_proceeds_control_diff_correct(self):
+        trades = [_options_inflow(683529.0), _options_outflow(20000.0)]
+        result = compute_reconciliation(trades, skv_options_proceeds=683529.0)
+        diff = next(d for d in result.diffs if d.label == "Options proceeds")
+        assert diff.calculated == pytest.approx(683529.0)
+        assert diff.ok is True
+
+    def test_k4_proceeds_unaffected_by_sign_split(self):
+        """K4 proceeds (sale_amount_sek sum) still includes all signs for accounting."""
+        trades = [_futures_inflow(100.0), _futures_outflow(40.0)]
+        result = compute_reconciliation(trades)
+        # K4 proceeds = 100 + (-40) = 60
+        assert result.futures.proceeds == pytest.approx(60.0)
+        # SKV split: proceeds=100, cost=40
+        assert result.futures.skv_proceeds == pytest.approx(100.0)
+        assert result.futures.skv_cost == pytest.approx(40.0)
+
+    def test_zero_sale_amount_not_counted(self):
+        """Trades with sale_amount_sek == 0 contribute to neither skv bucket."""
+        trade = _make_trade(
+            asset_class="FUTURES",
+            k4_section="D",
+            sale_amount_sek=0.0,
+            purchase_amount_sek=0.0,
+            profit_loss_sek=0.0,
+        )
+        result = compute_reconciliation([trade])
+        assert result.futures.skv_proceeds == pytest.approx(0.0)
+        assert result.futures.skv_cost == pytest.approx(0.0)
+
+    def test_fop_split_as_futures(self):
+        """OPTIONS ON FUTURES must use futures skv buckets."""
+        trades = [
+            _make_trade(
+                asset_class="OPTIONS ON FUTURES",
+                k4_section="D",
+                sale_amount_sek=5000.0,
+                purchase_amount_sek=0.0,
+                profit_loss_sek=5000.0,
+            ),
+            _make_trade(
+                asset_class="OPTIONS ON FUTURES",
+                k4_section="D",
+                sale_amount_sek=-3000.0,
+                purchase_amount_sek=0.0,
+                profit_loss_sek=-3000.0,
+            ),
+        ]
+        result = compute_reconciliation(trades)
+        assert result.futures.skv_proceeds == pytest.approx(5000.0)
+        assert result.futures.skv_cost == pytest.approx(3000.0)
+
+    def test_format_report_shows_skv_proceeds(self):
+        """format_report must include SKV proceeds in DERIVATIVES BREAKDOWN."""
+        trades = [_futures_inflow(147649.0), _futures_outflow(98558.0)]
+        result = compute_reconciliation(trades)
+        report = format_report(result)
+        assert "SKV proceeds" in report
+        assert "SKV cost" in report
+        assert "147,649" in report
+        assert "98,558" in report
+
+
+# ---------------------------------------------------------------------------
 # write_report
 # ---------------------------------------------------------------------------
 
