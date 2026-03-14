@@ -22,6 +22,7 @@ from skv_parser import (
     SkvParseError,
     _normalise_line,
     _parse_number,
+    _extract_last_number,
     parse_skv_text,
     parse_skv_pdf,
 )
@@ -77,6 +78,69 @@ _COMMA_SEP_TEXT = """\
 _PARTIAL_TEXT = """\
 Övriga terminer - erhållen ersättning
 147 649
+"""
+
+# ---------------------------------------------------------------------------
+# Real-PDF format: Interactive Brokers data rows + Summa line
+# Mirrors the exact structure of Skatteverket's Kontroll- och inkomstuppgifter
+# ---------------------------------------------------------------------------
+
+# Compact 3-section real-PDF text with multi-row IB data and Summa lines.
+_REAL_PDF_TEXT = """\
+Övriga terminer - erhållen ersättning
+Interactive Brokers Ireland Limited MES 19DEC25 (141 st) 27 892
+Interactive Brokers Ireland Limited MES 19SEP25 (187 st) 24 226
+Interactive Brokers Ireland Limited MES 20JUN25 (28 st) 82 389
+Interactive Brokers Ireland Limited MNQ 19DEC25 26
+Interactive Brokers Ireland Limited MNQ 19SEP25 89
+Interactive Brokers Ireland Limited MNQ 21MAR25 (8 st) 12 074
+Interactive Brokers Ireland Limited VXM 17SEP25 (6 st) 32
+Interactive Brokers Ireland Limited VXM 19NOV25 (13 st) 892
+Interactive Brokers Ireland Limited VXM 20AUG25 29
+Summa 147 649
+Övriga terminer - erlagd ersättning
+Interactive Brokers Ireland Limited MES 20MAR26 (15 st) 4 130
+Interactive Brokers Ireland Limited MES 21MAR25 (10 st) 85 919
+Interactive Brokers Ireland Limited VIX 17SEP25 (2 st) 568
+Interactive Brokers Ireland Limited VIX 19FEB25 (4 st) 1 595
+Interactive Brokers Ireland Limited VXM 17DEC25 (17 st) 4 927
+Interactive Brokers Ireland Limited VXM 21JAN26 (31 st) 1 093
+Interactive Brokers Ireland Limited VXM 22OCT25 326
+Summa 98 558
+Övriga optioner
+Interactive Brokers Ireland Limited IBIT 01AUG25 64.5 P 164
+Interactive Brokers Ireland Limited IBIT 03JAN25 52.5 P (5 st) 4 095
+Interactive Brokers Ireland Limited MES 05SEP25 6610 C 0
+Interactive Brokers Ireland Limited MES 06AUG25 6350 C 399
+Interactive Brokers Ireland Limited QQQ 17JAN25 510 P (2 st) 2 162
+Summa 6 820
+"""
+
+# Real-PDF text with page-break noise between section header and first IB row.
+# Mirrors the real PDF where "Övriga optioner" is on page 5 and the data
+# rows start on page 6, with page-header junk in between.
+_REAL_PDF_PAGEBREAK_TEXT = """\
+Övriga terminer - erhållen ersättning
+Interactive Brokers Ireland Limited MES 20JUN25 (28 st) 82 389
+Interactive Brokers Ireland Limited MNQ 21MAR25 (8 st) 12 074
+Summa 94 463
+Övriga terminer - erlagd ersättning
+Interactive Brokers Ireland Limited MES 21MAR25 (10 st) 85 919
+Interactive Brokers Ireland Limited VXM 22OCT25 326
+Summa 86 245
+Övriga optioner
+* Kontroll- och inkomstuppgifter 2 (6)
+Skatteverket
+20
+00
+vs
+60
+8004
+VKS
+Interactive Brokers Ireland Limited IBIT 03JAN25 52.5 P (5 st) 4 095
+Interactive Brokers Ireland Limited IBIT 07FEB25 55.5 C (5 st) 6 817
+Interactive Brokers Ireland Limited MES 05SEP25 6610 C 0
+Summa 10 912
 """
 
 _MISSING_TEXT = """\
@@ -394,3 +458,158 @@ class TestIntegrationWithReconciliation:
         # All values match exactly → all diffs OK
         assert result.all_ok is True
         assert "OK" in result.status_label
+
+
+# ---------------------------------------------------------------------------
+# _extract_last_number
+# ---------------------------------------------------------------------------
+
+class TestExtractLastNumber:
+    def test_plain_value_at_end(self):
+        assert _extract_last_number("Interactive Brokers Ireland Limited MNQ 19DEC25 26") == 26
+
+    def test_space_thousands_at_end(self):
+        assert _extract_last_number("Interactive Brokers Ireland Limited MES 19DEC25 (141 st) 27 892") == 27892
+
+    def test_paren_quantity_ignored(self):
+        # (141 st) must not bleed into the extracted number
+        assert _extract_last_number("Interactive Brokers Ireland Limited MES 20JUN25 (28 st) 82 389") == 82389
+
+    def test_multiple_parens(self):
+        assert _extract_last_number("Foo (5 st) bar (2 st) 4 095") == 4095
+
+    def test_zero_amount(self):
+        assert _extract_last_number("Interactive Brokers Ireland Limited MES 05SEP25 6610 C 0") == 0
+
+    def test_summa_line(self):
+        assert _extract_last_number("Summa 147 649") == 147649
+
+    def test_large_number(self):
+        assert _extract_last_number("Interactive Brokers Ireland Limited X 1 234 567") == 1234567
+
+    def test_no_number_returns_none(self):
+        assert _extract_last_number("Skatteverket") is None
+
+    def test_empty_string_returns_none(self):
+        assert _extract_last_number("") is None
+
+    def test_paren_only_content_ignored(self):
+        # After stripping parens nothing with digits remains
+        assert _extract_last_number("foo (141 st)") is None
+
+    def test_single_digit(self):
+        assert _extract_last_number("something 5") == 5
+
+    def test_option_symbol_not_last(self):
+        # Symbol like "6610 C" should not be mistaken as the amount; 0 is last
+        line = "Interactive Brokers Ireland Limited MES 05SEP25 6610 C 0"
+        assert _extract_last_number(line) == 0
+
+
+# ---------------------------------------------------------------------------
+# parse_skv_text — real-PDF format (IB rows + Summa)
+# ---------------------------------------------------------------------------
+
+class TestRealPdfFormat:
+    """Tests using synthetic text that mirrors the actual Skatteverket PDF structure."""
+
+    def test_all_three_sections_with_summa(self):
+        data = parse_skv_text(_REAL_PDF_TEXT)
+        assert data.futures_proceeds == pytest.approx(147649.0)
+        assert data.futures_cost == pytest.approx(98558.0)
+        assert data.options_proceeds == pytest.approx(6820.0)
+
+    def test_summa_is_authoritative_over_row_sum(self):
+        """When Summa disagrees with row sum, Summa must win."""
+        text = (
+            "Övriga terminer - erhållen ersättning\n"
+            "Interactive Brokers Ireland Limited MES 19DEC25 (141 st) 27 892\n"
+            "Interactive Brokers Ireland Limited MES 19SEP25 87\n"
+            "Summa 27 980\n"   # 27892 + 87 = 27979, Summa says 27980
+        )
+        data = parse_skv_text(text)
+        assert data.futures_proceeds == pytest.approx(27980.0)
+
+    def test_paren_quantity_not_extracted(self):
+        """Values like (141 st) must never be extracted as the row amount."""
+        text = (
+            "Övriga terminer - erhållen ersättning\n"
+            "Interactive Brokers Ireland Limited MES 19DEC25 (141 st) 27 892\n"
+            "Summa 27 892\n"
+        )
+        data = parse_skv_text(text)
+        assert data.futures_proceeds == pytest.approx(27892.0)
+
+    def test_pagebreak_noise_ignored(self):
+        """Page headers and form numbers between section header and IB rows must not
+        cause the section value to be extracted prematurely."""
+        data = parse_skv_text(_REAL_PDF_PAGEBREAK_TEXT)
+        assert data.futures_proceeds == pytest.approx(94463.0)
+        assert data.futures_cost == pytest.approx(86245.0)
+        assert data.options_proceeds == pytest.approx(10912.0)
+
+    def test_pagebreak_noise_does_not_use_small_number(self):
+        """Stray page-header numbers (20, 60, 8004) must not be taken as the value."""
+        data = parse_skv_text(_REAL_PDF_PAGEBREAK_TEXT)
+        assert data.options_proceeds != pytest.approx(20.0)
+        assert data.options_proceeds != pytest.approx(60.0)
+        assert data.options_proceeds != pytest.approx(8004.0)
+
+    def test_row_sum_used_when_no_summa(self):
+        """Without a Summa line, sum the IB row values."""
+        text = (
+            "Övriga terminer - erhållen ersättning\n"
+            "Interactive Brokers Ireland Limited MES 19DEC25 100\n"
+            "Interactive Brokers Ireland Limited MES 19SEP25 200\n"
+            "Övriga terminer - erlagd ersättning\n"
+        )
+        data = parse_skv_text(text)
+        assert data.futures_proceeds == pytest.approx(300.0)
+
+    def test_single_ib_row_no_summa(self):
+        text = (
+            "Övriga optioner\n"
+            "Interactive Brokers Ireland Limited IBIT 01AUG25 P 5 000\n"
+        )
+        data = parse_skv_text(text)
+        assert data.options_proceeds == pytest.approx(5000.0)
+
+    def test_zero_amount_row(self):
+        """Rows with amount 0 must be included without error."""
+        text = (
+            "Övriga optioner\n"
+            "Interactive Brokers Ireland Limited MES 05SEP25 6610 C 0\n"
+            "Interactive Brokers Ireland Limited MES 06AUG25 6350 C 399\n"
+            "Summa 399\n"
+        )
+        data = parse_skv_text(text)
+        assert data.options_proceeds == pytest.approx(399.0)
+
+    def test_endash_phrase_with_ib_rows(self):
+        """En-dash variant of the phrase should work with real-PDF rows."""
+        text = (
+            "Övriga terminer – erhållen ersättning\n"
+            "Interactive Brokers Ireland Limited MES 19DEC25 (141 st) 27 892\n"
+            "Summa 27 892\n"
+        )
+        data = parse_skv_text(text)
+        assert data.futures_proceeds == pytest.approx(27892.0)
+
+    def test_real_pdf_via_mock(self, tmp_path):
+        """End-to-end: parse_skv_pdf() with mocked PDF text returns correct values."""
+        fake_pdf = tmp_path / "kontroll.pdf"
+        fake_pdf.write_bytes(b"%PDF-1.4 fake")
+
+        with patch("skv_parser._extract_text_from_pdf", return_value=_REAL_PDF_TEXT):
+            data = parse_skv_pdf(fake_pdf)
+
+        assert data.futures_proceeds == pytest.approx(147649.0)
+        assert data.futures_cost == pytest.approx(98558.0)
+        assert data.options_proceeds == pytest.approx(6820.0)
+
+    def test_debug_output_produced(self, capsys):
+        """debug=True must print [SKV DEBUG] lines to stdout."""
+        parse_skv_text(_REAL_PDF_TEXT, debug=True)
+        captured = capsys.readouterr()
+        assert "[SKV DEBUG]" in captured.out
+        assert "Summa" in captured.out or "Row sum" in captured.out
