@@ -29,6 +29,7 @@ This module:
 from __future__ import annotations
 
 import logging
+import textwrap
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -126,12 +127,17 @@ class ControlDiff:
         Value reported to Skatteverket by the broker.
     tolerance:
         Fractional tolerance (e.g. 0.05 for 5 %).
+    note:
+        Optional explanatory note shown in the report when the deviation
+        exceeds tolerance.  Use this to document known systematic differences
+        between the CSV-derived value and the broker-reported figure.
     """
 
     label: str
     calculated: float
     skv: float
     tolerance: float = RECONCILIATION_TOLERANCE
+    note: str = ""
 
     @property
     def difference(self) -> float:
@@ -315,6 +321,13 @@ def compute_reconciliation(
                 calculated=futures.skv_cost,
                 skv=skv_futures_cost,
                 tolerance=tolerance,
+                note=(
+                    "Futures erlagd is computed here as the sum of per-symbol net losses "
+                    "(profit_loss_sek). IBKR's PDF uses gross opening-trade notionals with "
+                    "their own FX rates, which cannot be reproduced from the activity "
+                    "statement CSV alone. A deviation here is expected and does not affect "
+                    "the K4 tax figures."
+                ),
             )
         )
 
@@ -434,6 +447,10 @@ def format_report(result: ReconciliationResult) -> str:
                 f"  {d.label:<28} {_fmt_diff(d.difference)} SEK"
                 f"  ({pct}%){flag}"
             )
+            if not d.ok and d.note:
+                # Wrap the note at 72 chars, indented by 4 spaces
+                for note_line in textwrap.wrap(d.note, width=72):
+                    lines.append(f"    {note_line}")
         lines.append("")
 
     lines.append(f"Status: {result.status_label}")
