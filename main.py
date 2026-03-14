@@ -5,7 +5,7 @@ Command-line entry point for ibkr-k4-tax.
 
 Usage
 -----
-    python main.py --input activity.csv --start 2025-01-01 --end 2025-12-31
+    python main.py --input data/raw/activity.csv --start 2025-01-01 --end 2025-12-31
 
 Run ``python main.py --help`` for the full option list.
 """
@@ -41,21 +41,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
         epilog="""
 Examples:
   # Full year 2025
-  python main.py --input activity.csv --start 2025-01-01 --end 2025-12-31
+  python main.py --input data/raw/activity.csv --start 2025-01-01 --end 2025-12-31
 
   # Specify a custom output directory
-  python main.py --input activity.csv --start 2025-01-01 --end 2025-12-31 --output ./reports/2025
+  python main.py --input data/raw/activity.csv --start 2025-01-01 --end 2025-12-31 --output ./reports/2025
 
   # With Skatteverket PDF (auto-extracts control totals)
-  python main.py --input activity.csv --start 2025-01-01 --end 2025-12-31 \\
-    --tax-pdf deklaration.pdf
+  python main.py --input data/raw/activity.csv --start 2025-01-01 --end 2025-12-31 \\
+    --tax-pdf data/raw/deklaration.pdf
 
   # With manually entered Skatteverket figures (fallback if no PDF)
-  python main.py --input activity.csv --start 2025-01-01 --end 2025-12-31 \\
+  python main.py --input data/raw/activity.csv --start 2025-01-01 --end 2025-12-31 \\
     --skv-futures-proceeds 147649 --skv-futures-cost 98558 --skv-options-proceeds 683529
 
   # Debug logging
-  python main.py --input activity.csv --start 2025-01-01 --end 2025-12-31 --log-level DEBUG
+  python main.py --input data/raw/activity.csv --start 2025-01-01 --end 2025-12-31 --log-level DEBUG
         """,
     )
 
@@ -115,8 +115,10 @@ Examples:
         metavar="FILE",
         help=(
             "Path to the Skatteverket declaration PDF (Inkomstdeklaration 1 "
-            "or Kontroll- och inkomstuppgifter).  The parser automatically "
-            "extracts 'Övriga terminer' and 'Övriga optioner' control totals."
+            "or Kontroll- och inkomstuppgifter).  Place the file in data/raw/ "
+            "and pass e.g. --tax-pdf data/raw/deklaration.pdf.  The parser "
+            "automatically extracts 'Övriga terminer' and 'Övriga optioner' "
+            "control totals."
         ),
     )
     skv.add_argument(

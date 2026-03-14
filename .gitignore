@@ -30,6 +30,7 @@ coverage.xml
 data/raw/*
 data/processed/*
 !data/raw/.gitkeep
+!data/raw/*.pdf
 !data/processed/.gitkeep
 
 # Output files

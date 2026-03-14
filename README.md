@@ -162,7 +162,7 @@ python main.py \
   --input   data/raw/activity.csv \
   --start   2025-01-01 \
   --end     2025-12-31 \
-  --tax-pdf deklaration.pdf
+  --tax-pdf data/raw/deklaration.pdf
 ```
 
 ### With manually entered figures (fallback)
@@ -353,8 +353,8 @@ The default tolerance is **5 %**.  Override with `--reconciliation-tolerance`:
 
 ```bash
 # Strict: warn if deviation exceeds 1 %
-python main.py --input activity.csv --start 2025-01-01 --end 2025-12-31 \
-  --tax-pdf deklaration.pdf \
+python main.py --input data/raw/activity.csv --start 2025-01-01 --end 2025-12-31 \
+  --tax-pdf data/raw/deklaration.pdf \
   --reconciliation-tolerance 0.01
 ```
 
@@ -382,7 +382,7 @@ ibkr-k4-tax/
 │   └── test_skv_parser.py     # 38 tests — Skatteverket PDF parser
 │
 ├── data/
-│   ├── raw/           # Place IBKR CSV exports here  (git-ignored)
+│   ├── raw/           # Place IBKR CSV exports and Skatteverket PDFs here  (git-ignored except *.pdf)
 │   └── processed/     # Generated outputs & FX cache  (git-ignored)
 │
 ├── requirements.txt
